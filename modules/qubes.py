@@ -16,7 +16,51 @@
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ANSIBLE_METADATA = {'metadata_version': '1.0',
+                                        'status': ['preview'],
+                                        'supported_by': 'community'}
 
+DOCUMENTATION = '''
+---
+module: qubes
+short_description: Manage individual qubes (Qubes virtual machines)
+description:
+    - Create, destroy, and configure qubes in Qubes
+version_added: "2.3"
+author: "Nicklaus McClendon (@kulinacs)
+options:
+  name:
+    description:
+      - Target qube
+  state:
+    description:
+      - Desired state of target qube
+    default: present
+    choices: ['present', 'absent']
+  type:
+    description:
+      - Desired type of target qube
+    default: appvm
+    choices: ['appvm', 'netvm', 'proxyvm', 'hvm', 'templatehvm']
+  template:
+    description:
+      - Desired template of target qube
+  standalone:
+    description:
+      - Bool, if the target qube should be standalone
+    choices: ['yes', 'no']
+  label:
+    description:
+      - The desired label for the target qube
+    choices: ['red', 'orange', 'yellow', 'green', 'gray', 'blue', 'purple', 'black']
+  pool:
+    description:
+      - The storage pool for the target qube
+
+requirements:
+  - "python >= 2.6"
+  - qubes
+'''
 from ansible.module_utils.basic import AnsibleModule
 from qubes.qubes import QubesVmCollection
 from qubes.qubes import QubesVmLabels
