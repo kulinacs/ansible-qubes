@@ -67,6 +67,7 @@ from ansible.module_utils.basic import AnsibleModule
 try:
     from qubes.qubes import QubesVmCollection
     from qubes.qubes import QubesVmLabels
+    from qubes.qubes import QubesVmClasses
     from qubes.qubes import QubesException
     QUBES_DOM0 = True
 except ImportError:
@@ -135,6 +136,22 @@ def main():
     if state == 'present':
         if qvm_collection.get_vm_by_name(name) is not None:
             changed = False
+            qube = qvm_collection.get_vm_by_name(name)
+
+            if qube.label != label:
+                qube.label = label
+                changed = True
+
+            if qube.template != template:
+                qube.template = template
+                changed = True
+
+            if not isinstance(qube, QubesVmClasses[vmtype]):
+                module.fail_json(msg='Existing VM type cannot be changed')
+
+            if qube.pool_name != pool:
+                module.fail_json(msg='Existing VM storage pool cannot be changed')
+
         else:
             try:
                 qube = qvm_collection.add_new_vm(vmtype, name=name,
