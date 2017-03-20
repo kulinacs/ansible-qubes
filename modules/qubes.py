@@ -61,10 +61,16 @@ requirements:
   - "python >= 2.6"
   - qubes
 '''
+
 from ansible.module_utils.basic import AnsibleModule
-from qubes.qubes import QubesVmCollection
-from qubes.qubes import QubesVmLabels
-from qubes.qubes import QubesException
+
+try:
+    from qubes.qubes import QubesVmCollection
+    from qubes.qubes import QubesVmLabels
+    from qubes.qubes import QubesException
+    QUBES_DOM0 = True
+except ImportError:
+    QUBES_DOM0 = False
 
 
 def main():
@@ -79,6 +85,9 @@ def main():
             pool=dict(default='default', type='str'),
         )
     )
+
+    if not QUBES_DOM0:
+        module.fail_json(msg='This module must be run from QubeOS dom0')
 
     qvm_collection = QubesVmCollection()
     qvm_collection.lock_db_for_writing()
