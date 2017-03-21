@@ -55,6 +55,21 @@ options:
   pool:
     description:
       - The storage pool for the target qube
+  memory:
+    description:
+      - The starting memory for the target qube
+  maxmem:
+    description:
+      - The maximum memory for the target qube
+  mac:
+    description:
+      - The mac address for the target qube (of the format XX:XX:XX:XX:XX:XX or auto)
+  strictreset:
+    description:
+      - Bool, whether or not the VM can be assigned a device that doesn't support any reset method
+  e820host:
+    description:
+      - Bool, whether or not the VM has a memory map of the host
 
 requirements:
   - "python >= 2.6"
@@ -62,12 +77,14 @@ requirements:
 '''
 
 from ansible.module_utils.basic import AnsibleModule
+import re
 
 try:
     from qubes.qubes import QubesVmCollection
     from qubes.qubes import QubesVmLabels
     from qubes.qubes import QubesVmClasses
     from qubes.qubes import QubesException
+    from qubes.qubes import QubesHost
     QUBES_DOM0 = True
 except ImportError:
     QUBES_DOM0 = False
@@ -113,6 +130,39 @@ def verify_standalone(options):
         options['standalone'] = True
 
 
+def verify_memory(module, options):
+    '''Sets starting memory if passed, and verifies the value'''
+    if module.params['memory'] is not None:
+        if module.params['memory'] <= 0:
+            module.fail_json(msg='Memory cannot be negative')
+        qubes_host = QubesHost()
+        if module.params['memory'] > qubes_host.memory_total/1024:
+            module.fail_json(msg='This host has only %s MB of RAM' % str(qubes_host.memory_total/1024))
+        options['args']['memory'] = module.params['memory']
+
+
+def verify_maxmem(module, options):
+    '''Sets max memory if passed, and verifies the value'''
+    if module.params['maxmem'] is not None:
+        if module.params['maxmem'] <= 0:
+            module.fail_json(msg='Memory cannot be negative')
+        qubes_host = QubesHost()
+        if module.params['maxmem'] > qubes_host.memory_total/1024:
+            module.fail_json(msg='This host has only %s MB of RAM' % str(qubes_host.memory_total/1024))
+        options['args']['maxmem'] = module.params['maxmem']
+
+
+def verify_mac(module, options):
+    '''Sets mac address if passed, and verifies the value'''
+    if module.params['mac'] is not None:
+        if not re.match('[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$|auto$', module.params['mac']):
+            module.fail_json(msg='The MAC address must be auto or of the form XX:XX:XX:XX:XX:XX')
+        if module.params['mac'] == 'auto':
+            options['args']['mac'] = None
+        else:
+            options['args']['mac'] = module.params['mac']
+
+
 def verify_options(module, qvm_collection):
     options = {}
     options['state'] = module.params['state']
@@ -127,6 +177,13 @@ def verify_options(module, qvm_collection):
     options['base_template'] = options['args']['template']
     if options['standalone']:
         options['args']['template'] = None
+    verify_memory(module, options)
+    verify_maxmem(module, options)
+    verify_mac(module, options)
+    if module.params['strictreset'] is not None:
+        options['args']['pci_strictreset'] = module.params['strictreset']
+    if module.params['e820host'] is not None:
+        options['args']['pci_e820_host'] = module.params['e820host']
     return options
 
 
@@ -141,6 +198,10 @@ def main():
             label=dict(choices=['red', 'orange', 'yellow', 'green', 'gray', 'blue', 'purple', 'black']),
             pool=dict(default='default', type='str'),
             memory=dict(type='int'),
+            maxmem=dict(type='int'),
+            mac=dict(type='str'),
+            strictreset=dict(type='bool'),
+            e820host=dict(default=False, type='bool'),
         )
     )
 
@@ -160,19 +221,16 @@ def main():
             changed = False
             qube = qvm_collection.get_vm_by_name(options['args']['name'])
 
-            if qube.label != options['args']['label']:
-                qube.label = options['args']['label']
-                changed = True
-
-            if qube.template != options['args']['template']:
-                qube.template = options['args']['template']
-                changed = True
+            for key in options['args']:
+                if key == 'pool_name':
+                    if qube.pool_name != options['args']['pool_name']:
+                        module.fail_json(msg='Existing VM storage pool cannot be changed')
+                elif getattr(qube, key) != options['args'][key]:
+                    setattr(qube, key, options['args'][key])
+                    changed = True
 
             if not isinstance(qube, QubesVmClasses[options['type']]):
                 module.fail_json(msg='Existing VM type cannot be changed')
-
-            if qube.pool_name != options['args']['pool_name']:
-                module.fail_json(msg='Existing VM storage pool cannot be changed')
 
         else:
             try:
