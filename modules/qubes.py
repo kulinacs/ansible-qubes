@@ -48,7 +48,6 @@ options:
   standalone:
     description:
       - Bool, if the target qube should be standalone
-    choices: ['yes', 'no']
   label:
     description:
       - The desired label for the target qube
@@ -73,6 +72,63 @@ try:
 except ImportError:
     QUBES_DOM0 = False
 
+vmtypes = {'appvm': 'QubesAppVm',
+           'netvm': 'QubesNetVm',
+           'proxyvm': 'QubesProxyVm',
+           'hvm': 'QubesHVm',
+           'templatehvm': 'QubesTemplateHVm'}
+
+
+def verify_label(module, options):
+    '''Verifies and sets the label'''
+    if module.params['label'] is not None:
+        options['args']['label'] = QubesVmLabels[module.params['label']]
+
+    if module.params['label'] is None and options['state'] != 'absent':
+        module.fail_json(msg='A label must be defined when creating a Qube')
+
+
+def verify_template(module, qvm_collection, options):
+    '''Verifies and sets the template'''
+    if module.params['template'] is None:
+        if options['type'] not in ('QubesHVm', 'QubesTemplateHVm'):
+            options['args']['template'] = qvm_collection.get_default_template()
+            if options['args']['template'] is None:
+                module.fail_json(msg='No template specified and no default template found')
+        else:
+            options['args']['template'] = None
+    else:
+        options['args']['template'] = qvm_collection.get_vm_by_name(module.params['template'])
+        if options['args']['template'] is None:
+            module.fail_json(msg='TemplateVM not found: %s' % module.params['template'])
+        elif not options['args']['template'].is_template():
+            module.fail_json(msg='%s is not a TemplateVM' % module.params['template'])
+
+
+def verify_standalone(options):
+    '''Sets if standalone. Must be run after verify_template()'''
+    if options['type'] == 'QubesHVm' and not options['args']['template']:
+        options['standalone'] = True
+    if options['type'] == 'QubesTemplateHVm':
+        options['standalone'] = True
+
+
+def verify_options(module, qvm_collection):
+    options = {}
+    options['state'] = module.params['state']
+    options['standalone'] = module.params['standalone']
+    options['args'] = {}
+    options['args']['name'] = module.params['name']
+    options['args']['pool_name'] = module.params['pool']
+    verify_label(module, options)
+    options['type'] = vmtypes[module.params['type']]
+    verify_template(module, qvm_collection, options)
+    verify_standalone(options)
+    options['base_template'] = options['args']['template']
+    if options['standalone']:
+        options['args']['template'] = None
+    return options
+
 
 def main():
     module = AnsibleModule(
@@ -84,6 +140,7 @@ def main():
             standalone=dict(default=False, type='bool'),
             label=dict(choices=['red', 'orange', 'yellow', 'green', 'gray', 'blue', 'purple', 'black']),
             pool=dict(default='default', type='str'),
+            memory=dict(type='int'),
         )
     )
 
@@ -94,79 +151,42 @@ def main():
     qvm_collection.lock_db_for_writing()
     qvm_collection.load()
 
+    # Verify parameters
     changed = True
-    name = module.params['name']
-    state = module.params['state']
-    pool = module.params['pool']
-    standalone = module.params['standalone']
+    options = verify_options(module, qvm_collection)
 
-    if module.params['label'] is not None:
-        label = QubesVmLabels[module.params['label']]
-
-    vmtypes = {'appvm': 'QubesAppVm',
-               'netvm': 'QubesNetVm',
-               'proxyvm': 'QubesProxyVm',
-               'hvm': 'QubesHVm',
-               'templatehvm': 'QubesTemplateHVm'}
-    vmtype = vmtypes[module.params['type']]
-
-    if module.params['template'] is None:
-        if vmtype not in ('QubesHVm', 'QubesTemplateHVm'):
-            template = qvm_collection.get_default_template()
-            if template is None:
-                module.fail_json(msg='No template specified and no default template found')
-    else:
-        template = qvm_collection.get_vm_by_name(module.params['template'])
-        if template is None:
-            module.fail_json(msg='TemplateVM not found: %s' % module.params['template'])
-        elif not template.is_template():
-            module.fail_json(msg='%s is not a TemplateVM' % module.params['template'])
-
-    if vmtype == 'QubesHVm' and not template:
-        standalone = True
-
-    if vmtype == 'QubesTemplateHVm':
-        standalone = True
-
-    if standalone:
-        new_vm_template = None
-    else:
-        new_vm_template = template
-
-    if state == 'present':
-        if qvm_collection.get_vm_by_name(name) is not None:
+    if options['state'] == 'present':
+        if qvm_collection.get_vm_by_name(options['args']['name']) is not None:
             changed = False
-            qube = qvm_collection.get_vm_by_name(name)
+            qube = qvm_collection.get_vm_by_name(options['args']['name'])
 
-            if qube.label != label:
-                qube.label = label
+            if qube.label != options['args']['label']:
+                qube.label = options['args']['label']
                 changed = True
 
-            if qube.template != template:
-                qube.template = template
+            if qube.template != options['args']['template']:
+                qube.template = options['args']['template']
                 changed = True
 
-            if not isinstance(qube, QubesVmClasses[vmtype]):
+            if not isinstance(qube, QubesVmClasses[options['type']]):
                 module.fail_json(msg='Existing VM type cannot be changed')
 
-            if qube.pool_name != pool:
+            if qube.pool_name != options['args']['pool_name']:
                 module.fail_json(msg='Existing VM storage pool cannot be changed')
 
         else:
             try:
-                qube = qvm_collection.add_new_vm(vmtype, name=name,
-                                                 template=new_vm_template,
-                                                 label=label, pool_name=pool)
+                qube = qvm_collection.add_new_vm(options['type'], **options['args'])
             except QubesException as e:
                 module.fail_json(msg='Unable to create VM: %s' % e)
 
-            qube.create_on_disk(source_template=template)
+            qube.create_on_disk(source_template=options['base_template'])
 
-    elif state == 'absent':
-        if qvm_collection.get_vm_by_name(name) is None:
+    elif options['state'] == 'absent':
+        if qvm_collection.get_vm_by_name(options['args']['name']) is None:
             changed = False
         else:
-            qube = qvm_collection.get_vm_by_name(name)
+            qube = qvm_collection.get_vm_by_name(options['args']['name'])
 
             if qube.is_running():
                 try:
