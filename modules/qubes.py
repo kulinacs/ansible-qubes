@@ -52,9 +52,9 @@ options:
     description:
       - The desired label for the target qube
     choices: ['red', 'orange', 'yellow', 'green', 'gray', 'blue', 'purple', 'black']
-  pool:
+  pool_name:
     description:
-      - The storage pool for the target qube
+      - The storage pool_name for the target qube
   memory:
     description:
       - The starting memory for the target qube
@@ -64,12 +64,57 @@ options:
   mac:
     description:
       - The mac address for the target qube (of the format XX:XX:XX:XX:XX:XX or auto)
-  strictreset:
+  pci_strictreset:
     description:
       - Bool, whether or not the VM can be assigned a device that doesn't support any reset method
-  e820host:
+  pci_e820_host:
     description:
       - Bool, whether or not the VM has a memory map of the host
+  netvm:
+    description:
+      - The netvm for the target qube. Can be default, none, or a vm name.
+  dispvm_netvm:
+    description:
+      - The netvm for disposable vms based on the target qube. Can be default, none, or a vm name.
+  kernel:
+    description:
+      - The kernel for the target qube. Can be default, none, or a kernel name 
+  vcpus:
+    description:
+      - The number of vcpus for the target qube
+  kernelopts:
+    description:
+      - The kernelopt for the target qube. Can be default or a string of options 
+  drive:
+    description:
+      - The drive for the target qube. Can be none or the drive
+  debug:
+    description:
+      - Bool
+  default_user:
+    description:
+      - The default user for the target qube
+  include_in_backups:
+    description:
+      - Bool
+  internal:
+    description:
+      - Bool
+  guiagent_installed:
+    description:
+      - Bool
+  seemless_gui_mode:
+    description:
+      - Bool
+  autostart:
+    description:
+      - Bool
+  qrexec_timeout:
+    description:
+      - qrexec_timeout for the target qube
+  timezone:
+    description:
+      - timezone for the target qube
 
 requirements:
   - "python >= 2.6"
@@ -78,6 +123,7 @@ requirements:
 
 from ansible.module_utils.basic import AnsibleModule
 import re
+import os
 
 try:
     from qubes.qubes import QubesVmCollection
@@ -85,6 +131,7 @@ try:
     from qubes.qubes import QubesVmClasses
     from qubes.qubes import QubesException
     from qubes.qubes import QubesHost
+    from qubes.qubes import system_path
     QUBES_DOM0 = True
 except ImportError:
     QUBES_DOM0 = False
@@ -96,7 +143,7 @@ vmtypes = {'appvm': 'QubesAppVm',
            'templatehvm': 'QubesTemplateHVm'}
 
 
-def verify_label(module, options):
+def set_label(module, options):
     '''Verifies and sets the label'''
     if module.params['label'] is not None:
         options['args']['label'] = QubesVmLabels[module.params['label']]
@@ -105,9 +152,9 @@ def verify_label(module, options):
         module.fail_json(msg='A label must be defined when creating a Qube')
 
 
-def verify_template(module, qvm_collection, options):
+def set_template(module, qvm_collection, options):
     '''Verifies and sets the template'''
-    if module.params['template'] is None:
+    if module.params['template'] is None or module.params['template'] == 'none':
         if options['type'] not in ('QubesHVm', 'QubesTemplateHVm'):
             options['args']['template'] = qvm_collection.get_default_template()
             if options['args']['template'] is None:
@@ -122,15 +169,15 @@ def verify_template(module, qvm_collection, options):
             module.fail_json(msg='%s is not a TemplateVM' % module.params['template'])
 
 
-def verify_standalone(options):
-    '''Sets if standalone. Must be run after verify_template()'''
+def set_standalone(options):
+    '''Sets if standalone. Must be run after set_template()'''
     if options['type'] == 'QubesHVm' and not options['args']['template']:
         options['standalone'] = True
     if options['type'] == 'QubesTemplateHVm':
         options['standalone'] = True
 
 
-def verify_memory(module, options):
+def set_memory(module, options):
     '''Sets starting memory if passed, and verifies the value'''
     if module.params['memory'] is not None:
         if module.params['memory'] <= 0:
@@ -141,7 +188,7 @@ def verify_memory(module, options):
         options['args']['memory'] = module.params['memory']
 
 
-def verify_maxmem(module, options):
+def set_maxmem(module, options):
     '''Sets max memory if passed, and verifies the value'''
     if module.params['maxmem'] is not None:
         if module.params['maxmem'] <= 0:
@@ -152,7 +199,7 @@ def verify_maxmem(module, options):
         options['args']['maxmem'] = module.params['maxmem']
 
 
-def verify_mac(module, options):
+def set_mac(module, options):
     '''Sets mac address if passed, and verifies the value'''
     if module.params['mac'] is not None:
         if not re.match('[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$|auto$', module.params['mac']):
@@ -163,27 +210,152 @@ def verify_mac(module, options):
             options['args']['mac'] = module.params['mac']
 
 
-def verify_options(module, qvm_collection):
+def set_netvm(module, qvm_collection, options):
+    '''Sets netvm if passed, and verifies the value'''
+    if module.params['netvm'] is not None:
+        if module.params['netvm'] == 'none':
+            options['args']['netvm'] = None
+            options['args']['uses_default_netvm'] = False
+        elif module.params['netvm'] == 'default':
+            options['args']['netvm'] = qvm_collection.get_default_netvm()
+            options['args']['uses_default_netvm'] = True
+        else:
+            options['args']['netvm'] = qvm_collection.get_vm_by_name(module.params['netvm'])
+            if options['args']['netvm'] is None:
+                module.fail_json(msg='netvm: %s does not exist' % module.params['netvm'])
+            if not options['args']['netvm'].is_netvm():
+                module.fail_json(msg='%s is not a netvm' % module.params['netvm'])
+            options['args']['uses_default_netvm'] = False
+
+
+def set_dispvm_netvm(module, qvm_collection, options):
+    '''Sets dispvm_netvm if passed, and verifies the value'''
+    if module.params['dispvm_netvm'] is not None:
+        if module.params['dispvm_netvm'] == 'none':
+            options['args']['dispvm_netvm'] = None
+            options['args']['uses_default_dispvm_netvm'] = False
+        elif module.params['dispvm_netvm'] == 'default':
+            options['args']['uses_default_dispvm_netvm'] = True
+        else:
+            options['args']['dispvm_netvm'] = qvm_collection.get_vm_by_name(module.params['dispvm_netvm'])
+            if options['args']['dispvm_netvm'] is None:
+                module.fail_json(msg='dispvm_netvm: %s does not exist' % module.params['dispvm_netvm'])
+            if not options['args']['dispvm_netvm'].is_netvm():
+                module.fail_json(msg='%s is not a dispvm_netvm' % module.params['dispvm_netvm'])
+            options['args']['uses_default_dispvm_netvm'] = False
+
+
+def set_kernel(module, qvm_collection, options):
+    '''Sets kernel if passed, and verifies the value'''
+    if module.params['kernel'] is not None:
+        if module.params['kernel'] == 'none':
+            options['args']['kernel'] = None
+            options['args']['uses_default_kernel'] = False
+        elif module.params['kernel'] == 'default':
+            options['args']['kernel'] = qvm_collection.get_default_kernel()
+            options['args']['uses_default_kernel'] = True
+        else:
+            if not os.path.exists(os.path.join(system_path["qubes_kernels_base_dir"], module.params['kernel'])):
+                module.fail_json(msg='kernel: %s does not exist' % module.params['kernel'])
+            options['args']['kernel'] = module.params['kernel']
+            options['args']['uses_default_kernel'] = False
+
+
+def set_vcpus(module, options):
+    '''Sets starting vcpus if passed, and verifies the value'''
+    if module.params['vcpus'] is not None:
+        if module.params['vcpus'] <= 0:
+            module.fail_json(msg='Vcpus cannot be negative')
+        qubes_host = QubesHost()
+        if module.params['vcpus'] > qubes_host.no_cpus:
+            module.fail_json(msg='This host has only %s cpus' % str(qubes_host.no_cpus))
+        options['args']['vcpus'] = module.params['vcpus']
+
+
+def set_kernelopts(module, options):
+    '''Sets kernelopts if passed, and verifies the value'''
+    if module.params['kernelopts'] is not None:
+        if module.params['kernelopts'] == 'default':
+            options['args']['uses_default_kernelopts'] = True
+        else:
+            options['args']['kernelopts'] = module.params['kernelopts']
+            options['args']['uses_default_kernelopts'] = False
+
+
+def set_drive(module, options):
+    '''Sets drive if passed, and verifies the value'''
+    if module.params['drive'] is not None:
+        if module.params['drive'] == 'none':
+            options['args']['drive'] = None
+        else:
+            options['args']['drive'] = module.params['drive']
+
+
+def set_qrexec_timeout(module, options):
+    '''Sets qrexec_timeout if passed, and verifies the value'''
+    if module.params['qrexec_timeout'] is not None:
+        if module.params['qrexec_timeout'] < 0:
+            module.fail_json(msg='qrexec_timeout cannot be negative')
+        options['args']['qrexec_timeout'] = module.params['qrexec_timeout']
+
+
+def set_timezone(module, options):
+    '''Sets timezone  if passed, and verifies the value'''
+    if module.params['timezone'] is not None:
+        if module.params['timezone'] == 'localtime':
+            options['args']['timezone'] = module.params['timezone']
+        else:
+            try:
+                options['args']['timezone'] = int(module.params['timezone'])
+            except:
+                module.fail_json(msg='timezone must be localtime or an integer offset')
+
+
+def set_options(module, qvm_collection):
     options = {}
     options['state'] = module.params['state']
     options['standalone'] = module.params['standalone']
     options['args'] = {}
     options['args']['name'] = module.params['name']
-    options['args']['pool_name'] = module.params['pool']
-    verify_label(module, options)
+    options['args']['pool_name'] = module.params['pool_name']
+    set_label(module, options)
     options['type'] = vmtypes[module.params['type']]
-    verify_template(module, qvm_collection, options)
-    verify_standalone(options)
+    set_template(module, qvm_collection, options)
+    set_standalone(options)
     options['base_template'] = options['args']['template']
     if options['standalone']:
         options['args']['template'] = None
-    verify_memory(module, options)
-    verify_maxmem(module, options)
-    verify_mac(module, options)
-    if module.params['strictreset'] is not None:
-        options['args']['pci_strictreset'] = module.params['strictreset']
-    if module.params['e820host'] is not None:
-        options['args']['pci_e820_host'] = module.params['e820host']
+    set_memory(module, options)
+    set_maxmem(module, options)
+    set_mac(module, options)
+    if module.params['pci_strictreset'] is not None:
+        options['args']['pci_strictreset'] = module.params['pci_strictreset']
+    if module.params['pci_e820_host'] is not None:
+        options['args']['pci_e820_host'] = module.params['pci_e820_host']
+    set_netvm(module, qvm_collection, options)
+    set_dispvm_netvm(module, qvm_collection, options)
+    set_kernel(module, qvm_collection, options)
+    set_vcpus(module, options)
+    set_kernelopts(module, options)
+    set_drive(module, options)
+    if module.params['debug'] is not None:
+        options['args']['debug'] = module.params['debug']
+    if module.params['default_user'] is not None:
+        options['args']['default_user'] = module.params['default_user']
+    if module.params['include_in_backups'] is not None:
+        options['args']['include_in_backups'] = module.params['include_in_backups']
+    if module.params['qrexec_installed'] is not None:
+        options['args']['qrexec_installed'] = module.params['qrexec_installed']
+    if module.params['internal'] is not None:
+        options['args']['internal'] = module.params['internal']
+    if module.params['guiagent_installed'] is not None:
+        options['args']['guiagent_installed'] = module.params['guiagent_installed']
+    if module.params['seamless_gui_mode'] is not None:
+        options['args']['seamless_gui_mode'] = module.params['seamless_gui_mode']
+    if module.params['autostart'] is not None:
+        options['args']['autostart'] = module.params['autostart']
+    set_qrexec_timeout(module, options)
+    set_timezone(module, options)
     return options
 
 
@@ -196,12 +368,28 @@ def main():
             template=dict(type='str'),
             standalone=dict(default=False, type='bool'),
             label=dict(choices=['red', 'orange', 'yellow', 'green', 'gray', 'blue', 'purple', 'black']),
-            pool=dict(default='default', type='str'),
+            pool_name=dict(default='default', type='str'),
             memory=dict(type='int'),
             maxmem=dict(type='int'),
             mac=dict(type='str'),
-            strictreset=dict(type='bool'),
-            e820host=dict(default=False, type='bool'),
+            pci_strictreset=dict(type='bool'),
+            pci_e820_host=dict(default=False, type='bool'),
+            netvm=dict(type='str'),
+            dispvm_netvm=dict(type='str'),
+            kernel=dict(type='str'),
+            vcpus=dict(type='int'),
+            kernelopts=dict(type='str'),
+            drive=dict(type='str'),
+            debug=dict(type='bool'),
+            default_user=dict(type='str'),
+            include_in_backups=dict(type='bool'),
+            qrexec_installed=dict(type='bool'),
+            internal=dict(type='bool'),
+            guiagent_installed=dict(type='bool'),
+            seamless_gui_mode=dict(type='bool'),
+            autostart=dict(type='bool'),
+            qrexec_timeout=dict(type='int'),
+            timezone=dict(),
         )
     )
 
@@ -212,9 +400,9 @@ def main():
     qvm_collection.lock_db_for_writing()
     qvm_collection.load()
 
-    # Verify parameters
+    # Set parameters
     changed = True
-    options = verify_options(module, qvm_collection)
+    options = set_options(module, qvm_collection)
 
     if options['state'] == 'present':
         if qvm_collection.get_vm_by_name(options['args']['name']) is not None:
