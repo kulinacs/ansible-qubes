@@ -1,0 +1,25 @@
+---
+qubes_vms:
+- autostart: false
+  debug: false
+  default_user: user
+  dispvm_netvm: sys-vpn
+  include_in_backups: true
+  internal: false
+  kernel: 4.4.55-11
+  kernelopts: nopat
+  label: orange
+  mac: 00:16:3E:5E:6C:14
+  maxmem: 4000
+  memory: 400
+  name: htp
+  netvm: sys-vpn
+  pci_e820_host: true
+  pci_strictreset: true
+  pool_name: default
+  qrexec_timeout: 60
+  standalone: true
+  state: present
+  template: none
+  type: appvm
+  vcpus: 2

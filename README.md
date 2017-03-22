@@ -11,3 +11,7 @@ Current Functionality
 ### Qubes Module
 
 Configures state of individual Qubes (VMs) on the system. NOTE: Setting a VM as absent will delete the VM even if it is running
+
+### dump_vms.py
+
+Dumps current vm properties into a yaml file that can be consumed by Ansible. Currently needs work to support correctly setting auto settings.
