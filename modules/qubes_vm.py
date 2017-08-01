@@ -33,7 +33,7 @@ options:
     description:
       - Desired state of target qube
     default: present
-    choices: ['present', 'absent']
+    choices: ['present', 'absent', 'started', 'stopped', 'killed']
   label:
     description:
       - Desired label of target qube
@@ -105,7 +105,7 @@ def main():
     module = AnsibleModule(
         argument_spec=dict(
             name=dict(required=True, type='str'),
-            state=dict(default='present', choices=['present', 'absent']),
+            state=dict(default='present', choices=['present', 'absent', 'started', 'stopped', 'killed']),
             label=dict(required=True, type='str'),
             vm_class=dict(required=True, type='str'),
             template=dict(required=True, type='str'),
@@ -133,17 +133,28 @@ def main():
     options = set_options(module)
     changed = False
 
-    if options['state'] == 'present':
+    if options['state'] != 'absent':
         if options['name'] not in Qubes().domains:
             changed = True
             Qubes().add_new_vm(options['vm_class'], options['name'],
                                options['label'], options['template'])
         changed = changed or set_properties(options)
-    elif options['state'] == 'absent':
+        if options['state'] == 'started':
+            if not Qubes().domains[options['name']].is_running():
+                changed = True
+                Qubes().domains[options['name']].start()
+        elif options['state'] == 'stopped':
+            if Qubes().domains[options['name']].is_running():
+                changed = True
+                Qubes().domains[options['name']].shutdown()
+        elif options['state'] == 'killed':
+            if Qubes().domains[options['name']].is_running():
+                changed = True
+                Qubes().domains[options['name']].kill()
+    else:
         if options['name'] in Qubes().domains:
             changed = True
             del Qubes().domains[options['name']]
-
 
     if not QUBES_ADMIN:
         module.fail_json(msg='qubesadmin must be installed')
