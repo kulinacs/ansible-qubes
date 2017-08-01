@@ -1,0 +1,8 @@
+---
+ - name: Create qubes vm
+   qubes_vm:
+     name: Test-VM
+     label: green
+     template: debian-9
+     state: absent
+     vm_class: AppVM
